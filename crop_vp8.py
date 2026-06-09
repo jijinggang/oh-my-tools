@@ -35,6 +35,10 @@ def parse_args(argv=None):
         help="全透明视频时强制输出原视频",
     )
     parser.add_argument(
+        "--pre-crop", default=None,
+        help="预裁剪边缘，格式: top,bottom,left,right（如 10,0,5,0）",
+    )
+    parser.add_argument(
         "--ffmpeg-path", default=None,
         help="ffmpeg 可执行文件路径",
     )
@@ -168,15 +172,6 @@ def analyze_alpha_bounds(ffmpeg_path, input_video, width, height, fps,
             frame = np.frombuffer(raw, dtype=np.uint8).reshape(height, width, 4)
             alpha = frame[:, :, 3]
 
-            if wm_region is not None:
-                wx, wy, ww, wh = wm_region
-                wx = max(0, wx)
-                wy = max(0, wy)
-                ww = min(ww, width - wx)
-                wh = min(wh, height - wy)
-                if ww > 0 and wh > 0:
-                    alpha[wy:wy + wh, wx:wx + ww] = 0
-
             rows, cols = np.where(alpha > alpha_threshold)
 
             if len(rows) > 0:
@@ -264,6 +259,37 @@ def copy_video(ffmpeg_path, input_video, output_video, verbose=False):
         sys.exit(1)
 
 
+def apply_pre_crop(ffmpeg_path, ffprobe_path, input_video, top, bottom, left, right):
+    """预裁剪视频边缘，返回临时文件路径。"""
+    info = get_video_info(ffprobe_path, input_video)
+    new_w = info["width"] - left - right
+    new_h = info["height"] - top - bottom
+    if new_w <= 0 or new_h <= 0:
+        print("错误: 预裁剪后尺寸无效", file=sys.stderr)
+        sys.exit(1)
+
+    suffix = os.path.splitext(input_video)[1] or ".webm"
+    with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as f:
+        output_path = f.name
+
+    cmd = [
+        ffmpeg_path, "-y",
+        "-c:v", "libvpx",
+        "-i", input_video,
+        "-vf", f"crop={new_w}:{new_h}:{left}:{top}",
+        "-c:v", "libvpx",
+        "-pix_fmt", "yuva420p",
+        "-auto-alt-ref", "0",
+        "-c:a", "copy",
+        output_path,
+    ]
+    result = subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    if result.returncode != 0:
+        print("错误: 预裁剪失败", file=sys.stderr)
+        sys.exit(1)
+    return output_path
+
+
 BITRATE_CHOICES = [
     ("与原视频相同", "original"),
     ("500 kbps", "500000"),
@@ -274,7 +300,8 @@ BITRATE_CHOICES = [
 ]
 
 
-def process_video(video_path, bitrate_choice, custom_bitrate, alpha_threshold, force):
+def process_video(video_path, bitrate_choice, custom_bitrate, alpha_threshold, force,
+                  pre_crop_enabled, pre_crop_top, pre_crop_bottom, pre_crop_left, pre_crop_right):
     """Gradio 回调：处理视频裁剪。"""
     import gradio as gr
 
@@ -307,6 +334,15 @@ def process_video(video_path, bitrate_choice, custom_bitrate, alpha_threshold, f
     else:
         bitrate = int(bitrate_choice)
         bitrate_label = f"{bitrate / 1000:.0f} kbps"
+
+    # 预裁剪
+    if pre_crop_enabled and any(v > 0 for v in (pre_crop_top, pre_crop_bottom, pre_crop_left, pre_crop_right)):
+        pre_cropped = apply_pre_crop(
+            ffmpeg_path, ffprobe_path, video_path,
+            pre_crop_top, pre_crop_bottom, pre_crop_left, pre_crop_right,
+        )
+        video_path = pre_cropped
+        info = get_video_info(ffprobe_path, video_path)
 
     # 分析 alpha 边界
     bounds, _, total_frames = analyze_alpha_bounds(
@@ -424,9 +460,37 @@ def webui_main(port=7860):
             value=False,
         )
 
+        with gr.Row():
+            pre_crop_enabled = gr.Checkbox(
+                label="启用预裁剪",
+                value=False,
+            )
+        with gr.Row(visible=False) as pre_crop_row:
+            pre_crop_top = gr.Slider(
+                0, 200, value=0, step=1, label="上边缘 (px)",
+            )
+            pre_crop_bottom = gr.Slider(
+                0, 200, value=0, step=1, label="下边缘 (px)",
+            )
+            pre_crop_left = gr.Slider(
+                0, 200, value=0, step=1, label="左边缘 (px)",
+            )
+            pre_crop_right = gr.Slider(
+                0, 200, value=0, step=1, label="右边缘 (px)",
+            )
+
         process_btn = gr.Button("🔍 分析 & 裁剪", variant="primary")
 
         status_text = gr.Markdown("")
+
+        def toggle_pre_crop(enabled):
+            return gr.update(visible=enabled)
+
+        pre_crop_enabled.change(
+            toggle_pre_crop,
+            inputs=[pre_crop_enabled],
+            outputs=[pre_crop_row],
+        )
 
         bitrate_dropdown.change(
             toggle_custom,
@@ -436,7 +500,8 @@ def webui_main(port=7860):
 
         process_btn.click(
             fn=process_video,
-            inputs=[input_video, bitrate_dropdown, custom_bitrate, alpha_threshold, force_checkbox],
+            inputs=[input_video, bitrate_dropdown, custom_bitrate, alpha_threshold, force_checkbox,
+                    pre_crop_enabled, pre_crop_top, pre_crop_bottom, pre_crop_left, pre_crop_right],
             outputs=[output_video, status_text],
         )
 
@@ -479,9 +544,25 @@ def main():
         sys.exit(1)
     print(f"原始码率: {bitrate / 1000:.0f} kbps")
 
+    # 预裁剪
+    input_video = args.input
+    if args.pre_crop:
+        parts = args.pre_crop.split(",")
+        if len(parts) != 4:
+            print("错误: --pre-crop 格式应为 top,bottom,left,right（如 10,0,5,0）", file=sys.stderr)
+            sys.exit(1)
+        pc_top, pc_bottom, pc_left, pc_right = map(int, parts)
+        if any(v > 0 for v in (pc_top, pc_bottom, pc_left, pc_right)):
+            input_video = apply_pre_crop(
+                ffmpeg, ffprobe, input_video,
+                pc_top, pc_bottom, pc_left, pc_right,
+            )
+            info = get_video_info(ffprobe, input_video)
+            print(f"预裁剪后尺寸: {info['width']}x{info['height']}")
+
     print("正在分析透明边缘...")
     bounds, _, _ = analyze_alpha_bounds(
-        ffmpeg, args.input, info["width"], info["height"], info["fps"],
+        ffmpeg, input_video, info["width"], info["height"], info["fps"],
         codec_name=info["codec_name"],
         alpha_threshold=args.alpha_threshold, verbose=args.verbose,
     )
@@ -489,7 +570,7 @@ def main():
     if bounds is None:
         if args.force:
             print("警告: 所有帧均为全透明，使用 --force 强制复制原视频")
-            copy_video(ffmpeg, args.input, output, verbose=args.verbose)
+            copy_video(ffmpeg, input_video, output, verbose=args.verbose)
             print(f"完成: {output}")
             return
         else:
@@ -507,10 +588,10 @@ def main():
     if (crop_x == 0 and crop_y == 0
             and crop_w == info["width"] and crop_h == info["height"]):
         print("未检测到透明边缘，无需裁剪，直接复制")
-        copy_video(ffmpeg, args.input, output, verbose=args.verbose)
+        copy_video(ffmpeg, input_video, output, verbose=args.verbose)
     else:
         print(f"正在裁剪: {info['width']}x{info['height']} -> {crop_w}x{crop_h}")
-        crop_video(ffmpeg, args.input, output, crop_x, crop_y, crop_w, crop_h,
+        crop_video(ffmpeg, input_video, output, crop_x, crop_y, crop_w, crop_h,
                    bitrate=bitrate, speed=args.speed, verbose=args.verbose)
 
     print(f"完成: {output}")
