@@ -167,6 +167,16 @@ def analyze_alpha_bounds(ffmpeg_path, input_video, width, height, fps,
 
             frame = np.frombuffer(raw, dtype=np.uint8).reshape(height, width, 4)
             alpha = frame[:, :, 3]
+
+            if wm_region is not None:
+                wx, wy, ww, wh = wm_region
+                wx = max(0, wx)
+                wy = max(0, wy)
+                ww = min(ww, width - wx)
+                wh = min(wh, height - wy)
+                if ww > 0 and wh > 0:
+                    alpha[wy:wy + wh, wx:wx + ww] = 0
+
             rows, cols = np.where(alpha > alpha_threshold)
 
             if len(rows) > 0:
@@ -430,7 +440,7 @@ def webui_main(port=7860):
             outputs=[output_video, status_text],
         )
 
-    demo.launch(server_port=port)
+    demo.launch(server_name="0.0.0.0", server_port=port)
 
 
 def main():
