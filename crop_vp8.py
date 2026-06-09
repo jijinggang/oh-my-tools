@@ -419,6 +419,9 @@ def webui_main(port=7860):
         title="YUVA VP8 WebM 透明边缘裁剪",
         css="""
             video {
+                display: block !important;
+                margin-left: auto !important;
+                margin-right: auto !important;
                 max-width: 360px !important;
                 max-height: 360px !important;
                 object-fit: contain !important;
