@@ -573,7 +573,8 @@ def build_ui():
                        pre_crop_enabled, pre_crop_top, pre_crop_bottom, pre_crop_left, pre_crop_right):
             if video_path is None:
                 saved = load_history()
-                return None, "### ⚠ 请先上传视频文件", render_all(saved), gr.update(), gr.update()
+                yield None, "### ⚠ 请先上传视频文件", render_all(saved), gr.update(), gr.update()
+                return
 
             filename = os.path.basename(video_path)
             saved = load_history()
@@ -641,7 +642,12 @@ def build_ui():
 
 def webui_main(port=7860):
     """启动独立 Gradio Web 界面（不含侧边栏）。"""
-    import gradio as gr
+    try:
+        import gradio as gr
+    except ImportError:
+        print("错误: 使用 --webui 需要安装 gradio", file=sys.stderr)
+        print("运行: pip install gradio", file=sys.stderr)
+        sys.exit(1)
 
     with gr.Blocks(
         title="YUVA VP8 WebM 透明边缘裁剪",
