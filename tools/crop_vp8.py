@@ -425,7 +425,9 @@ def build_ui():
     """构建工具 UI，返回 gr.Column。"""
     import gradio as gr
 
-    HISTORY_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "history.json")
+    _TOOLS_DIR = os.path.dirname(os.path.abspath(__file__))
+    _PROJECT_ROOT = os.path.dirname(_TOOLS_DIR)
+    HISTORY_FILE = os.path.join(_PROJECT_ROOT, "history.json")
 
     def toggle_custom(choice):
         return gr.update(visible=(choice == "custom"))
@@ -485,12 +487,25 @@ def build_ui():
         script = """
 <script>
 function downloadFile(path) {
-    var a = document.createElement('a');
-    a.href = '/file=' + encodeURIComponent(path);
-    a.download = path.replace(/^.*[\\\\/]/, '');
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
+    var tb = document.querySelector('#hidden-download-path');
+    var input = tb.querySelector('textarea') || tb.querySelector('input');
+    if (input) {
+        var proto = input.tagName === 'TEXTAREA' ? window.HTMLTextAreaElement.prototype : window.HTMLInputElement.prototype;
+        var nativeSetter = Object.getOwnPropertyDescriptor(proto, 'value').set;
+        nativeSetter.call(input, path);
+        input.dispatchEvent(new Event('input', { bubbles: true }));
+        setTimeout(function() {
+            var btn = document.querySelector('#hidden-download-trigger');
+            var button = btn.querySelector('button');
+            if (button) button.click();
+            // 等待 Gradio 更新 File 组件后自动点击下载链接
+            setTimeout(function() {
+                var fileComp = document.querySelector('#hidden-download-file');
+                var link = fileComp.querySelector('a[download]');
+                if (link) link.click();
+            }, 300);
+        }, 150);
+    }
 }
 </script>
 """
@@ -566,6 +581,11 @@ function downloadFile(path) {
         gr.Markdown("---\n### 📋 队列与处理记录")
         history_html = gr.HTML(value=render_all(initial_records))
 
+        # 隐藏组件：用于表格中的下载按钮触发 Gradio 文件下载
+        download_path = gr.Textbox(visible=False, elem_id="hidden-download-path")
+        download_trigger = gr.Button(visible=False, elem_id="hidden-download-trigger")
+        download_file = gr.File(visible=False, elem_id="hidden-download-file")
+
         def toggle_pre_crop(enabled):
             return gr.update(visible=enabled)
 
@@ -579,6 +599,18 @@ function downloadFile(path) {
             toggle_custom,
             inputs=[bitrate_dropdown],
             outputs=[custom_bitrate],
+        )
+
+        def trigger_download(path):
+            """更新隐藏的 File 组件以触发下载。"""
+            if path and os.path.isfile(path):
+                return path
+            return gr.update()
+
+        download_trigger.click(
+            fn=trigger_download,
+            inputs=[download_path],
+            outputs=[download_file],
         )
 
         def on_process(video_path, bitrate_choice, custom_bitrate, alpha_threshold, force,
