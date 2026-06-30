@@ -9,6 +9,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+from datetime import datetime
 from pathlib import Path
 
 import numpy as np
@@ -441,13 +442,6 @@ def build_ui():
         with open(HISTORY_FILE, "w", encoding="utf-8") as f:
             json.dump(records, f, ensure_ascii=False, indent=2)
 
-    def make_download_choices(records):
-        choices = []
-        for r in records:
-            if r.get("output_path") and os.path.isfile(r["output_path"]):
-                choices.append(f"{r['filename']} — {r['crop_info']}")
-        return choices
-
     def render_all(records, processing=None):
         """统一渲染排队 + 已完成记录。"""
         if not records and not processing:
@@ -458,26 +452,49 @@ def build_ui():
             rows.append(
                 f"<tr style='background:#fffde7;'>"
                 f"<td style='padding:6px 12px;'>{idx}</td>"
-                f"<td style='padding:6px 12px;max-width:160px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;'>{processing['filename']}</td>"
+                f"<td style='padding:6px 12px;max-width:140px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;'>{processing['filename']}</td>"
                 f"<td style='padding:6px 12px;'>—</td>"
                 f"<td style='padding:6px 12px;'>—</td>"
                 f"<td style='padding:6px 12px;'>⏳ {processing.get('status_text', '排队中...')}</td>"
+                f"<td style='padding:6px 12px;'>—</td>"
+                f"<td style='padding:6px 12px;'>—</td>"
                 f"</tr>"
             )
             idx += 1
         for r in reversed(records):
             color = "background:#e8f5e9;" if "成功" in r.get("status", "") else ""
+            download_btn = ""
+            if r.get("output_path") and os.path.isfile(r["output_path"]):
+                download_btn = (
+                    f'<button onclick="downloadFile({json.dumps(r["output_path"])})" '
+                    f'style="padding:2px 10px;font-size:12px;cursor:pointer;border:1px solid #1976d2;'
+                    f'background:#1976d2;color:#fff;border-radius:3px;">下载</button>'
+                )
             rows.append(
                 f"<tr style='border-bottom:1px solid #eee;{color}'>"
                 f"<td style='padding:6px 12px;'>{idx}</td>"
-                f"<td style='padding:6px 12px;max-width:160px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;'>{r['filename']}</td>"
+                f"<td style='padding:6px 12px;max-width:140px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;'>{r['filename']}</td>"
                 f"<td style='padding:6px 12px;'>{r['orig_size']}</td>"
                 f"<td style='padding:6px 12px;'>{r['crop_info']}</td>"
                 f"<td style='padding:6px 12px;'>{r['status']}</td>"
+                f"<td style='padding:6px 12px;white-space:nowrap;'>{r.get('time', '-')}</td>"
+                f"<td style='padding:6px 12px;'>{download_btn}</td>"
                 f"</tr>"
             )
             idx += 1
-        return (
+        script = """
+<script>
+function downloadFile(path) {
+    var a = document.createElement('a');
+    a.href = '/file=' + encodeURIComponent(path);
+    a.download = path.replace(/^.*[\\\\/]/, '');
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+}
+</script>
+"""
+        return script + (
             "<table style='width:100%;border-collapse:collapse;font-size:14px;'>"
             "<thead><tr style='background:#f5f5f5;'>"
             "<th style='padding:8px 12px;text-align:left;'>#</th>"
@@ -485,6 +502,8 @@ def build_ui():
             "<th style='padding:8px 12px;text-align:left;'>原始尺寸</th>"
             "<th style='padding:8px 12px;text-align:left;'>裁剪结果</th>"
             "<th style='padding:8px 12px;text-align:left;'>状态</th>"
+            "<th style='padding:8px 12px;text-align:left;'>处理时间</th>"
+            "<th style='padding:8px 12px;text-align:left;'>下载</th>"
             "</tr></thead><tbody>"
             + "".join(rows) +
             "</tbody></table>"
@@ -492,8 +511,6 @@ def build_ui():
 
     # 预先加载历史记录
     initial_records = load_history()
-    initial_choices = make_download_choices(initial_records)
-    has_initial_choices = len(initial_choices) > 0
 
     with gr.Column() as col:
         gr.Markdown("## 🎬 YUVA VP8 WebM 透明边缘裁剪")
@@ -548,28 +565,6 @@ def build_ui():
 
         gr.Markdown("---\n### 📋 队列与处理记录")
         history_html = gr.HTML(value=render_all(initial_records))
-        download_dropdown = gr.Dropdown(
-            label="选择下载项",
-            choices=initial_choices,
-            value=initial_choices[-1] if initial_choices else None,
-            interactive=True,
-            visible=has_initial_choices,
-        )
-        download_file = gr.File(label="下载", visible=has_initial_choices)
-
-        def download_selected(choice):
-            if choice:
-                for r in load_history():
-                    label = f"{r['filename']} — {r['crop_info']}"
-                    if label == choice and os.path.isfile(r['output_path']):
-                        return r['output_path']
-            return None
-
-        download_dropdown.change(
-            fn=download_selected,
-            inputs=[download_dropdown],
-            outputs=[download_file],
-        )
 
         def toggle_pre_crop(enabled):
             return gr.update(visible=enabled)
@@ -590,7 +585,7 @@ def build_ui():
                        pre_crop_enabled, pre_crop_top, pre_crop_bottom, pre_crop_left, pre_crop_right):
             if video_path is None:
                 saved = load_history()
-                yield None, "### ⚠ 请先上传视频文件", render_all(saved), gr.update(), gr.update()
+                yield None, "### ⚠ 请先上传视频文件", render_all(saved)
                 return
 
             filename = os.path.basename(video_path)
@@ -599,7 +594,6 @@ def build_ui():
                 None,
                 f"### ⏳ 处理中: {filename} ...",
                 render_all(saved, processing={"filename": filename, "status_text": "分析中..."}),
-                gr.update(), gr.update(),
             )
             output_path, status = process_video(
                 video_path, bitrate_choice, custom_bitrate, alpha_threshold, force,
@@ -632,26 +626,23 @@ def build_ui():
                 "crop_info": crop_match,
                 "status": st,
                 "output_path": output_path or "",
+                "time": datetime.now().strftime("%H:%M:%S"),
             }
             saved.append(record)
             if len(saved) > 50:
                 saved = saved[-50:]
             save_history(saved)
-            choices = make_download_choices(saved)
-            has_choices = len(choices) > 0
             yield (
                 output_path,
                 status,
                 render_all(saved),
-                gr.update(choices=choices, value=choices[-1] if choices else None, visible=has_choices),
-                gr.update(value=output_path, visible=has_choices),
             )
 
         process_btn.click(
             fn=on_process,
             inputs=[input_video, bitrate_dropdown, custom_bitrate, alpha_threshold, force_checkbox,
                     pre_crop_enabled, pre_crop_top, pre_crop_bottom, pre_crop_left, pre_crop_right],
-            outputs=[output_video, status_text, history_html, download_dropdown, download_file],
+            outputs=[output_video, status_text, history_html],
         )
 
     return col
