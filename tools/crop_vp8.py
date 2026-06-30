@@ -9,7 +9,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
-from datetime import datetime
+
 from pathlib import Path
 
 import numpy as np
@@ -287,7 +287,7 @@ def apply_pre_crop(ffmpeg_path, ffprobe_path, input_video, top, bottom, left, ri
         sys.exit(1)
 
     suffix = os.path.splitext(input_video)[1] or ".webm"
-    with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as f:
+    with tempfile.NamedTemporaryFile(delete=False, prefix=_TEMP_PREFIX, suffix=suffix) as f:
         output_path = f.name
 
     cmd = [
@@ -317,11 +317,42 @@ BITRATE_CHOICES = [
     ("自定义", "custom"),
 ]
 
+_TEMP_PREFIX = "crop_vp8_"
+_TEMP_MAX_AGE_SECONDS = 2 * 24 * 3600  # 2 天
+
+
+def _cleanup_old_temp_files():
+    """清理超过 2 天的旧临时输出文件。"""
+    import time
+
+    temp_dir = tempfile.gettempdir()
+    now = time.time()
+    count = 0
+    try:
+        for name in os.listdir(temp_dir):
+            if not name.startswith(_TEMP_PREFIX):
+                continue
+            path = os.path.join(temp_dir, name)
+            if not os.path.isfile(path):
+                continue
+            if now - os.path.getmtime(path) > _TEMP_MAX_AGE_SECONDS:
+                try:
+                    os.unlink(path)
+                    count += 1
+                except OSError:
+                    pass
+    except OSError:
+        pass
+    if count > 0:
+        print(f"[清理] 已删除 {count} 个超过 2 天的旧临时文件", flush=True)
+
 
 def process_video(video_path, bitrate_choice, custom_bitrate, alpha_threshold, force,
                   pre_crop_enabled, pre_crop_top, pre_crop_bottom, pre_crop_left, pre_crop_right):
     """Gradio 回调：处理视频裁剪。"""
     import gradio as gr
+
+    _cleanup_old_temp_files()
 
     if video_path is None:
         gr.Warning("请先上传视频文件")
@@ -354,189 +385,84 @@ def process_video(video_path, bitrate_choice, custom_bitrate, alpha_threshold, f
         bitrate_label = f"{bitrate / 1000:.0f} kbps"
 
     # 预裁剪
+    pre_crop_temp = None
     if pre_crop_enabled and any(v > 0 for v in (pre_crop_top, pre_crop_bottom, pre_crop_left, pre_crop_right)):
-        pre_cropped = apply_pre_crop(
+        pre_crop_temp = apply_pre_crop(
             ffmpeg_path, ffprobe_path, video_path,
             pre_crop_top, pre_crop_bottom, pre_crop_left, pre_crop_right,
         )
-        video_path = pre_cropped
+        video_path = pre_crop_temp
         info = get_video_info(ffprobe_path, video_path)
 
-    # 分析 alpha 边界
-    bounds, _, total_frames = analyze_alpha_bounds(
-        ffmpeg_path, video_path, info["width"], info["height"], info["fps"],
-        codec_name=info["codec_name"],
-        alpha_threshold=int(alpha_threshold),
-        verbose=False,
-    )
+    try:
+        # 分析 alpha 边界
+        bounds, _, total_frames = analyze_alpha_bounds(
+            ffmpeg_path, video_path, info["width"], info["height"], info["fps"],
+            codec_name=info["codec_name"],
+            alpha_threshold=int(alpha_threshold),
+            verbose=False,
+        )
 
-    if bounds is None:
-        if force:
-            suffix = os.path.splitext(video_path)[1] or ".webm"
-            with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as f:
-                output_path = f.name
+        if bounds is None:
+            if force:
+                suffix = os.path.splitext(video_path)[1] or ".webm"
+                with tempfile.NamedTemporaryFile(delete=False, prefix=_TEMP_PREFIX, suffix=suffix) as f:
+                    output_path = f.name
+                copy_video(ffmpeg_path, video_path, output_path)
+                gr.Warning("所有帧均为全透明，已强制复制原视频")
+                status = (
+                    f"### ⚠ 所有帧均为全透明，已强制复制原视频\n"
+                    f"- 原始尺寸: {info['width']}×{info['height']}\n"
+                    f"- 码率: {bitrate_label}"
+                )
+                return output_path, status
+            else:
+                gr.Warning("所有帧均为全透明，无法确定裁剪区域")
+                return None, '### ❌ 所有帧均为全透明，无法确定裁剪区域（可勾选"强制输出"重试）'
+
+        min_x, min_y, max_x, max_y = bounds
+        crop_x, crop_y, crop_w, crop_h = adjust_crop_to_even(
+            min_x, min_y, max_x, max_y, info["width"], info["height"]
+        )
+
+        suffix = os.path.splitext(video_path)[1] or ".webm"
+        with tempfile.NamedTemporaryFile(delete=False, prefix=_TEMP_PREFIX, suffix=suffix) as f:
+            output_path = f.name
+
+        if (crop_x == 0 and crop_y == 0
+                and crop_w == info["width"] and crop_h == info["height"]):
             copy_video(ffmpeg_path, video_path, output_path)
-            gr.Warning("所有帧均为全透明，已强制复制原视频")
+            gr.Info("处理完成，未检测到透明边缘，已直接复制")
             status = (
-                f"### ⚠ 所有帧均为全透明，已强制复制原视频\n"
-                f"- 原始尺寸: {info['width']}×{info['height']}\n"
+                f"### ✅ 未检测到透明边缘，已直接复制\n"
+                f"- 尺寸: {info['width']}×{info['height']} (无变化)\n"
                 f"- 码率: {bitrate_label}"
             )
-            return output_path, status
         else:
-            gr.Warning("所有帧均为全透明，无法确定裁剪区域")
-            return None, '### ❌ 所有帧均为全透明，无法确定裁剪区域（可勾选"强制输出"重试）'
+            crop_video(ffmpeg_path, video_path, output_path,
+                       crop_x, crop_y, crop_w, crop_h,
+                       bitrate=bitrate, speed="best", verbose=False)
+            gr.Info("裁剪完成")
+            status = (
+                f"### ✅ 裁剪完成\n"
+                f"- 原始尺寸: {info['width']}×{info['height']}\n"
+                f"- 裁剪区域: ({crop_x}, {crop_y}) {crop_w}×{crop_h}\n"
+                f"- 码率: {bitrate_label}\n"
+                f"- 分析帧数: {total_frames}"
+            )
 
-    min_x, min_y, max_x, max_y = bounds
-    crop_x, crop_y, crop_w, crop_h = adjust_crop_to_even(
-        min_x, min_y, max_x, max_y, info["width"], info["height"]
-    )
-
-    suffix = os.path.splitext(video_path)[1] or ".webm"
-    with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as f:
-        output_path = f.name
-
-    if (crop_x == 0 and crop_y == 0
-            and crop_w == info["width"] and crop_h == info["height"]):
-        copy_video(ffmpeg_path, video_path, output_path)
-        gr.Info("处理完成，未检测到透明边缘，已直接复制")
-        status = (
-            f"### ✅ 未检测到透明边缘，已直接复制\n"
-            f"- 尺寸: {info['width']}×{info['height']} (无变化)\n"
-            f"- 码率: {bitrate_label}"
-        )
-    else:
-        crop_video(ffmpeg_path, video_path, output_path,
-                   crop_x, crop_y, crop_w, crop_h,
-                   bitrate=bitrate, speed="best", verbose=False)
-        gr.Info("裁剪完成")
-        status = (
-            f"### ✅ 裁剪完成\n"
-            f"- 原始尺寸: {info['width']}×{info['height']}\n"
-            f"- 裁剪区域: ({crop_x}, {crop_y}) {crop_w}×{crop_h}\n"
-            f"- 码率: {bitrate_label}\n"
-            f"- 分析帧数: {total_frames}"
-        )
-
-    return output_path, status
+        return output_path, status
+    finally:
+        if pre_crop_temp and os.path.isfile(pre_crop_temp):
+            os.unlink(pre_crop_temp)
 
 
 def build_ui():
     """构建工具 UI，返回 gr.Column。"""
     import gradio as gr
 
-    _TOOLS_DIR = os.path.dirname(os.path.abspath(__file__))
-    _PROJECT_ROOT = os.path.dirname(_TOOLS_DIR)
-    HISTORY_FILE = os.path.join(_PROJECT_ROOT, "history.json")
-
     def toggle_custom(choice):
         return gr.update(visible=(choice == "custom"))
-
-    def load_history():
-        try:
-            with open(HISTORY_FILE, "r", encoding="utf-8") as f:
-                data = json.load(f)
-            return data if isinstance(data, list) else []
-        except (FileNotFoundError, json.JSONDecodeError):
-            return []
-
-    def save_history(records):
-        with open(HISTORY_FILE, "w", encoding="utf-8") as f:
-            json.dump(records, f, ensure_ascii=False, indent=2)
-
-    def render_all(records, processing=None):
-        """统一渲染排队 + 已完成记录。"""
-        if not records and not processing:
-            return "<div style='color:#888;text-align:center;padding:20px;'>暂无处理记录</div>"
-        rows = []
-        idx = 1
-        if processing:
-            rows.append(
-                f"<tr style='background:#fffde7;'>"
-                f"<td style='padding:6px 12px;'>{idx}</td>"
-                f"<td style='padding:6px 12px;max-width:140px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;'>{processing['filename']}</td>"
-                f"<td style='padding:6px 12px;'>—</td>"
-                f"<td style='padding:6px 12px;'>—</td>"
-                f"<td style='padding:6px 12px;'>⏳ {processing.get('status_text', '排队中...')}</td>"
-                f"<td style='padding:6px 12px;'>—</td>"
-                f"<td style='padding:6px 12px;'>—</td>"
-                f"</tr>"
-            )
-            idx += 1
-        for r in reversed(records):
-            color = "background:#e8f5e9;" if "成功" in r.get("status", "") else ""
-            download_btn = ""
-            if r.get("output_path") and os.path.isfile(r["output_path"]):
-                # 用单引号包裹 onclick，避免 json.dumps 的双引号冲突
-                download_btn = (
-                    f"<button onclick='downloadFile({json.dumps(r['output_path'])})' "
-                    f"style='padding:2px 10px;font-size:12px;cursor:pointer;border:1px solid #1976d2;"
-                    f"background:#1976d2;color:#fff;border-radius:3px;'>下载</button>"
-                )
-            rows.append(
-                f"<tr style='border-bottom:1px solid #eee;{color}'>"
-                f"<td style='padding:6px 12px;'>{idx}</td>"
-                f"<td style='padding:6px 12px;max-width:140px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;'>{r['filename']}</td>"
-                f"<td style='padding:6px 12px;'>{r['orig_size']}</td>"
-                f"<td style='padding:6px 12px;'>{r['crop_info']}</td>"
-                f"<td style='padding:6px 12px;'>{r['status']}</td>"
-                f"<td style='padding:6px 12px;white-space:nowrap;'>{r.get('time', '-')}</td>"
-                f"<td style='padding:6px 12px;'>{download_btn}</td>"
-                f"</tr>"
-            )
-            idx += 1
-        script = """
-<script>
-function downloadFile(path) {
-    // 1. 找到隐藏的 Textbox，设置文件路径
-    var tbWrap = document.getElementById('hidden-download-path');
-    if (tbWrap) {
-        var input = tbWrap.querySelector('textarea') || tbWrap.querySelector('input');
-        if (input) {
-            var proto = input.tagName === 'TEXTAREA'
-                ? window.HTMLTextAreaElement.prototype
-                : window.HTMLInputElement.prototype;
-            var setter = Object.getOwnPropertyDescriptor(proto, 'value').set;
-            setter.call(input, path);
-            input.dispatchEvent(new Event('input', { bubbles: true }));
-        }
-    }
-    // 2. 延迟点击隐藏按钮，触发 Gradio 事件
-    setTimeout(function() {
-        var btnWrap = document.getElementById('hidden-download-trigger');
-        if (btnWrap) {
-            var btn = btnWrap.querySelector('button');
-            if (btn) btn.click();
-        }
-        // 3. 再延迟自动点击 File 组件的下载链接
-        setTimeout(function() {
-            var fileWrap = document.getElementById('hidden-download-file');
-            if (fileWrap) {
-                var link = fileWrap.querySelector('a[download]');
-                if (link) link.click();
-            }
-        }, 300);
-    }, 150);
-}
-</script>
-"""
-        return script + (
-            "<table style='width:100%;border-collapse:collapse;font-size:14px;'>"
-            "<thead><tr style='background:#f5f5f5;'>"
-            "<th style='padding:8px 12px;text-align:left;'>#</th>"
-            "<th style='padding:8px 12px;text-align:left;'>文件名</th>"
-            "<th style='padding:8px 12px;text-align:left;'>原始尺寸</th>"
-            "<th style='padding:8px 12px;text-align:left;'>裁剪结果</th>"
-            "<th style='padding:8px 12px;text-align:left;'>状态</th>"
-            "<th style='padding:8px 12px;text-align:left;'>处理时间</th>"
-            "<th style='padding:8px 12px;text-align:left;'>下载</th>"
-            "</tr></thead><tbody>"
-            + "".join(rows) +
-            "</tbody></table>"
-        )
-
-    # 预先加载历史记录
-    initial_records = load_history()
 
     with gr.Column() as col:
         gr.Markdown("## 🎬 YUVA VP8 WebM 透明边缘裁剪")
@@ -588,14 +514,7 @@ function downloadFile(path) {
         process_btn = gr.Button("🔍 分析 & 裁剪", variant="primary")
 
         status_text = gr.Markdown("")
-
-        gr.Markdown("---\n### 📋 队列与处理记录")
-        history_html = gr.HTML(value=render_all(initial_records))
-
-        # 隐藏组件：配合表格中的「下载」按钮使用
-        download_path = gr.Textbox(visible=False, elem_id="hidden-download-path")
-        download_trigger = gr.Button(visible=False, elem_id="hidden-download-trigger")
-        download_file = gr.File(visible=False, elem_id="hidden-download-file")
+        download_file = gr.File(label="下载处理结果", visible=True)
 
         def toggle_pre_crop(enabled):
             return gr.update(visible=enabled)
@@ -612,80 +531,26 @@ function downloadFile(path) {
             outputs=[custom_bitrate],
         )
 
-        def trigger_download(path):
-            """更新 File 组件以触发下载。"""
-            if path and os.path.isfile(path):
-                return path
-            return gr.update()
-
-        download_trigger.click(
-            fn=trigger_download,
-            inputs=[download_path],
-            outputs=[download_file],
-        )
-
         def on_process(video_path, bitrate_choice, custom_bitrate, alpha_threshold, force,
                        pre_crop_enabled, pre_crop_top, pre_crop_bottom, pre_crop_left, pre_crop_right):
             if video_path is None:
-                saved = load_history()
-                yield None, "### ⚠ 请先上传视频文件", render_all(saved)
+                yield None, "### ⚠ 请先上传视频文件", None
                 return
 
             filename = os.path.basename(video_path)
-            saved = load_history()
-            yield (
-                None,
-                f"### ⏳ 处理中: {filename} ...",
-                render_all(saved, processing={"filename": filename, "status_text": "分析中..."}),
-            )
+            yield None, f"### ⏳ 处理中: {filename} ...", None
+
             output_path, status = process_video(
                 video_path, bitrate_choice, custom_bitrate, alpha_threshold, force,
                 pre_crop_enabled, pre_crop_top, pre_crop_bottom, pre_crop_left, pre_crop_right,
             )
-            if "✅" in status:
-                st = "✅ 成功"
-            elif "⚠" in status:
-                st = "⚠ 警告"
-            else:
-                st = "❌ 失败"
-            orig_match = status.split("原始尺寸: ")[-1].split("\n")[0] if "原始尺寸" in status else "-"
-            if "裁剪区域: " in status:
-                crop_match = status.split("裁剪区域: ")[-1].split("\n")[0]
-            elif "无变化" in status:
-                crop_match = "无变化"
-            elif "已强制复制" in status:
-                crop_match = "强制复制"
-            elif "无法确定" in status:
-                crop_match = "无法裁剪"
-            elif "无法读取" in status:
-                crop_match = "读取失败"
-            elif "不含透明" in status:
-                crop_match = "无透明通道"
-            else:
-                crop_match = "-"
-            record = {
-                "filename": filename,
-                "orig_size": orig_match,
-                "crop_info": crop_match,
-                "status": st,
-                "output_path": output_path or "",
-                "time": datetime.now().strftime("%H:%M:%S"),
-            }
-            saved.append(record)
-            if len(saved) > 50:
-                saved = saved[-50:]
-            save_history(saved)
-            yield (
-                output_path,
-                status,
-                render_all(saved),
-            )
+            yield output_path, status, output_path
 
         process_btn.click(
             fn=on_process,
             inputs=[input_video, bitrate_dropdown, custom_bitrate, alpha_threshold, force_checkbox,
                     pre_crop_enabled, pre_crop_top, pre_crop_bottom, pre_crop_left, pre_crop_right],
-            outputs=[output_video, status_text, history_html],
+            outputs=[output_video, status_text, download_file],
         )
 
     return col

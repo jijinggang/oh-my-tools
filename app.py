@@ -29,22 +29,38 @@ import gradio as gr
 from tools.crop_vp8 import build_ui as build_crop_vp8_ui
 
 CSS = """
-.sidebar {
-    background: #1e1e2e !important;
-    min-height: 100vh !important;
+html, body {
+    margin: 0 !important;
     padding: 0 !important;
-    border-right: 1px solid #333 !important;
+    overflow: hidden !important;
+    height: 100% !important;
+}
+.gradio-container {
+    max-height: 100vh !important;
+    overflow: hidden !important;
+}
+.main-row {
+    height: 100vh !important;
+    overflow: hidden !important;
+    align-items: flex-start !important;
+}
+.sidebar {
+    background: #f8f9fa !important;
+    height: 100vh !important;
+    overflow-y: auto !important;
+    padding: 0 !important;
+    border-right: 1px solid #dee2e6 !important;
 }
 .sidebar-title {
-    color: #cdd6f4 !important;
+    color: #212529 !important;
     font-size: 18px !important;
     font-weight: 700 !important;
     padding: 20px 16px 12px !important;
     margin: 0 !important;
-    border-bottom: 1px solid #333 !important;
+    border-bottom: 1px solid #dee2e6 !important;
 }
 .sidebar-subtitle {
-    color: #6c7086 !important;
+    color: #6c757d !important;
     font-size: 11px !important;
     padding: 4px 16px 16px !important;
     margin: 0 !important;
@@ -59,26 +75,27 @@ CSS = """
     border: none !important;
     border-radius: 0 !important;
     background: transparent !important;
-    color: #a6adc8 !important;
+    color: #495057 !important;
     font-size: 14px !important;
     cursor: pointer !important;
     transition: background 0.15s !important;
     margin: 0 !important;
 }
 .tool-btn:hover {
-    background: #313244 !important;
-    color: #cdd6f4 !important;
+    background: #e9ecef !important;
+    color: #212529 !important;
 }
 .tool-btn.active {
-    background: #45475a !important;
-    color: #f5f5f5 !important;
-    border-left: 3px solid #89b4fa !important;
+    background: #e7f1ff !important;
+    color: #0d6efd !important;
+    border-left: 3px solid #0d6efd !important;
     padding-left: 13px !important;
 }
 .content {
     padding: 20px !important;
     background: #ffffff !important;
-    min-height: 100vh !important;
+    height: 100vh !important;
+    overflow-y: auto !important;
 }
 footer {
     display: none !important;
@@ -105,7 +122,7 @@ video {
 def webui_main(port=7860):
     """启动 Oh My Tools Web 界面（侧边栏 + 工具内容布局）。"""
     with gr.Blocks(title="Oh My Tools", css=CSS, theme=gr.themes.Default()) as demo:
-        with gr.Row():
+        with gr.Row(elem_classes="main-row"):
             # === 左侧边栏 ===
             with gr.Column(scale=1, elem_classes="sidebar"):
                 gr.Markdown("## 🛠 Oh My Tools", elem_classes="sidebar-title")
