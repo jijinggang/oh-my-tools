@@ -467,10 +467,11 @@ def build_ui():
             color = "background:#e8f5e9;" if "成功" in r.get("status", "") else ""
             download_btn = ""
             if r.get("output_path") and os.path.isfile(r["output_path"]):
+                # 用单引号包裹 onclick，避免 json.dumps 的双引号冲突
                 download_btn = (
-                    f'<button onclick="downloadFile({json.dumps(r["output_path"])})" '
-                    f'style="padding:2px 10px;font-size:12px;cursor:pointer;border:1px solid #1976d2;'
-                    f'background:#1976d2;color:#fff;border-radius:3px;">下载</button>'
+                    f"<button onclick='downloadFile({json.dumps(r['output_path'])})' "
+                    f"style='padding:2px 10px;font-size:12px;cursor:pointer;border:1px solid #1976d2;"
+                    f"background:#1976d2;color:#fff;border-radius:3px;'>下载</button>"
                 )
             rows.append(
                 f"<tr style='border-bottom:1px solid #eee;{color}'>"
@@ -487,25 +488,35 @@ def build_ui():
         script = """
 <script>
 function downloadFile(path) {
-    var tb = document.querySelector('#hidden-download-path');
-    var input = tb.querySelector('textarea') || tb.querySelector('input');
-    if (input) {
-        var proto = input.tagName === 'TEXTAREA' ? window.HTMLTextAreaElement.prototype : window.HTMLInputElement.prototype;
-        var nativeSetter = Object.getOwnPropertyDescriptor(proto, 'value').set;
-        nativeSetter.call(input, path);
-        input.dispatchEvent(new Event('input', { bubbles: true }));
-        setTimeout(function() {
-            var btn = document.querySelector('#hidden-download-trigger');
-            var button = btn.querySelector('button');
-            if (button) button.click();
-            // 等待 Gradio 更新 File 组件后自动点击下载链接
-            setTimeout(function() {
-                var fileComp = document.querySelector('#hidden-download-file');
-                var link = fileComp.querySelector('a[download]');
-                if (link) link.click();
-            }, 300);
-        }, 150);
+    // 1. 找到隐藏的 Textbox，设置文件路径
+    var tbWrap = document.getElementById('hidden-download-path');
+    if (tbWrap) {
+        var input = tbWrap.querySelector('textarea') || tbWrap.querySelector('input');
+        if (input) {
+            var proto = input.tagName === 'TEXTAREA'
+                ? window.HTMLTextAreaElement.prototype
+                : window.HTMLInputElement.prototype;
+            var setter = Object.getOwnPropertyDescriptor(proto, 'value').set;
+            setter.call(input, path);
+            input.dispatchEvent(new Event('input', { bubbles: true }));
+        }
     }
+    // 2. 延迟点击隐藏按钮，触发 Gradio 事件
+    setTimeout(function() {
+        var btnWrap = document.getElementById('hidden-download-trigger');
+        if (btnWrap) {
+            var btn = btnWrap.querySelector('button');
+            if (btn) btn.click();
+        }
+        // 3. 再延迟自动点击 File 组件的下载链接
+        setTimeout(function() {
+            var fileWrap = document.getElementById('hidden-download-file');
+            if (fileWrap) {
+                var link = fileWrap.querySelector('a[download]');
+                if (link) link.click();
+            }
+        }, 300);
+    }, 150);
 }
 </script>
 """
@@ -581,7 +592,7 @@ function downloadFile(path) {
         gr.Markdown("---\n### 📋 队列与处理记录")
         history_html = gr.HTML(value=render_all(initial_records))
 
-        # 隐藏组件：用于表格中的下载按钮触发 Gradio 文件下载
+        # 隐藏组件：配合表格中的「下载」按钮使用
         download_path = gr.Textbox(visible=False, elem_id="hidden-download-path")
         download_trigger = gr.Button(visible=False, elem_id="hidden-download-trigger")
         download_file = gr.File(visible=False, elem_id="hidden-download-file")
@@ -602,7 +613,7 @@ function downloadFile(path) {
         )
 
         def trigger_download(path):
-            """更新隐藏的 File 组件以触发下载。"""
+            """更新 File 组件以触发下载。"""
             if path and os.path.isfile(path):
                 return path
             return gr.update()
