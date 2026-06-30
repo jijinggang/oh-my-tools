@@ -28,6 +28,7 @@ import gradio as gr
 
 from tools.crop_vp8 import build_ui as build_crop_vp8_ui
 from tools.webm_to_mov import build_ui as build_webm_to_mov_ui
+from tools.mov_to_webm import build_ui as build_mov_to_webm_ui
 
 CSS = """
 html, body {
@@ -134,43 +135,60 @@ def webui_main(port=7860):
                 btn_webm_to_mov = gr.Button(
                     "🎞 WebM → ProRes 4444 MOV", elem_classes="tool-btn"
                 )
+                btn_mov_to_webm = gr.Button(
+                    "📦 MOV (ProRes) → WebM VP8", elem_classes="tool-btn"
+                )
 
             # === 右侧内容区 ===
             with gr.Column(scale=4, elem_classes="content"):
                 crop_vp8_ui = build_crop_vp8_ui()
                 webm_to_mov_ui = build_webm_to_mov_ui(visible=False)
+                mov_to_webm_ui = build_mov_to_webm_ui(visible=False)
 
         # === 工具切换逻辑 ===
         def switch_tool(tool_name):
             """切换工具：更新所有工具 UI 的可见性和按钮样式。"""
             is_crop = tool_name == "crop_vp8"
-            is_mov = tool_name == "webm_to_mov"
+            is_webm2mov = tool_name == "webm_to_mov"
+            is_mov2webm = tool_name == "mov_to_webm"
 
             # 各工具 UI 可见性
             crop_vp8_visible = gr.update(visible=is_crop)
-            webm_to_mov_visible = gr.update(visible=is_mov)
+            webm_to_mov_visible = gr.update(visible=is_webm2mov)
+            mov_to_webm_visible = gr.update(visible=is_mov2webm)
 
             # 各按钮样式
             btn_crop_active = gr.update(
                 elem_classes="tool-btn active" if is_crop else "tool-btn"
             )
-            btn_mov_active = gr.update(
-                elem_classes="tool-btn active" if is_mov else "tool-btn"
+            btn_webm2mov_active = gr.update(
+                elem_classes="tool-btn active" if is_webm2mov else "tool-btn"
+            )
+            btn_mov2webm_active = gr.update(
+                elem_classes="tool-btn active" if is_mov2webm else "tool-btn"
             )
 
             return [
-                crop_vp8_visible, webm_to_mov_visible,
-                btn_crop_active, btn_mov_active,
+                crop_vp8_visible, webm_to_mov_visible, mov_to_webm_visible,
+                btn_crop_active, btn_webm2mov_active, btn_mov2webm_active,
             ]
+
+        all_uis = [crop_vp8_ui, webm_to_mov_ui, mov_to_webm_ui]
+        all_btns = [btn_crop_vp8, btn_webm_to_mov, btn_mov_to_webm]
 
         btn_crop_vp8.click(
             fn=lambda: switch_tool("crop_vp8"),
-            outputs=[crop_vp8_ui, webm_to_mov_ui, btn_crop_vp8, btn_webm_to_mov],
+            outputs=all_uis + all_btns,
         )
 
         btn_webm_to_mov.click(
             fn=lambda: switch_tool("webm_to_mov"),
-            outputs=[crop_vp8_ui, webm_to_mov_ui, btn_crop_vp8, btn_webm_to_mov],
+            outputs=all_uis + all_btns,
+        )
+
+        btn_mov_to_webm.click(
+            fn=lambda: switch_tool("mov_to_webm"),
+            outputs=all_uis + all_btns,
         )
 
     demo.launch(server_name="0.0.0.0", server_port=port)
