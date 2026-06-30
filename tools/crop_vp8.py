@@ -2,6 +2,7 @@
 """裁剪 YUVA VP8 WebM 视频的透明边缘，保留音频不变。"""
 
 import argparse
+import asyncio
 import json
 import os
 import shutil
@@ -11,6 +12,22 @@ import tempfile
 from pathlib import Path
 
 import numpy as np
+
+# 修复 Python 3.13+ Windows 上 Proactor 事件循环的 ConnectionResetError
+if sys.platform == "win32":
+    try:
+        asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
+    except AttributeError:
+        from asyncio.proactor_events import _ProactorBasePipeTransport
+        _orig_call_connection_lost = _ProactorBasePipeTransport._call_connection_lost
+
+        def _patched_call_connection_lost(self):
+            try:
+                _orig_call_connection_lost(self)
+            except ConnectionResetError:
+                pass
+
+        _ProactorBasePipeTransport._call_connection_lost = _patched_call_connection_lost
 
 
 def parse_args(argv=None):

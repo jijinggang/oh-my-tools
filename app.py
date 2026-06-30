@@ -1,9 +1,28 @@
 #!/usr/bin/env python3
 """Oh My Tools — Web 界面主入口"""
+import asyncio
 import os
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
+# 修复 Python 3.13+ Windows 上 Proactor 事件循环的 ConnectionResetError
+if sys.platform == "win32":
+    try:
+        asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
+    except AttributeError:
+        # Python 3.13+ 移除了 WindowsSelectorEventLoopPolicy
+        # 抑制 Proactor 连接关闭时的 ConnectionResetError
+        from asyncio.proactor_events import _ProactorBasePipeTransport
+        _orig_call_connection_lost = _ProactorBasePipeTransport._call_connection_lost
+
+        def _patched_call_connection_lost(self):
+            try:
+                _orig_call_connection_lost(self)
+            except ConnectionResetError:
+                pass
+
+        _ProactorBasePipeTransport._call_connection_lost = _patched_call_connection_lost
 
 import gradio as gr
 
