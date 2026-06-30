@@ -639,7 +639,7 @@ def build_ui():
             save_history(saved)
             choices = make_download_choices(saved)
             has_choices = len(choices) > 0
-            return (
+            yield (
                 output_path,
                 status,
                 render_all(saved),
